@@ -13,6 +13,7 @@ import {
   Settings,
   Share2,
   Check,
+  Zap,
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
@@ -704,11 +705,60 @@ export default function PromptWarsApp() {
           <TwistPhase {...{ teams, submissions, onEditSubmission, twist: game.current_twist, nextPhase, isRunning: game.is_running, isFacilitator }} />
         )}
 
-        {(game.phase === PHASES.PROMPT || game.phase === PHASES.TWIST) && isScorer && (
-          <div className="bg-white rounded-2xl shadow-sm p-8 border text-center">
-            <TimerIcon className="w-16 h-16 mx-auto mb-4 text-slate-400" />
-            <h2 className="text-2xl font-bold mb-2">Teams Are Working</h2>
-            <p className="text-slate-600">Teams are currently working on their prompts. You'll be able to score when the scoring phase begins.</p>
+        {game.phase === PHASES.PROMPT && isScorer && (
+          <div className="grid gap-6">
+            <div className="bg-white rounded-2xl shadow-sm p-8 border text-center">
+              <Sparkles className="w-16 h-16 mx-auto mb-4 text-blue-500" />
+              <h2 className="text-2xl font-bold mb-2">Round {game.current_round} - Prompt Phase</h2>
+              <p className="text-slate-600 mb-6">Teams are currently working on their prompts. You'll be able to score when the scoring phase begins.</p>
+
+              {game.current_challenge && (
+                <div className="bg-slate-50 rounded-xl p-4 mb-4">
+                  <div className="text-xs font-semibold text-slate-500 mb-1">CURRENT CHALLENGE</div>
+                  <div className="text-sm font-medium text-slate-900 mb-1">{game.current_challenge.mode} Mode</div>
+                  <p className="text-slate-700">{game.current_challenge.text}</p>
+                </div>
+              )}
+
+              <div className="bg-blue-50 rounded-xl p-4">
+                <h3 className="font-semibold mb-2">Teams Competing ({teams.length})</h3>
+                <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-2">
+                  {teams.map((t) => (
+                    <div key={t.id} className="border rounded-lg p-2 bg-white text-sm">
+                      {t.name}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {game.phase === PHASES.TWIST && isScorer && (
+          <div className="grid gap-6">
+            <div className="bg-white rounded-2xl shadow-sm p-8 border text-center">
+              <Zap className="w-16 h-16 mx-auto mb-4 text-amber-500" />
+              <h2 className="text-2xl font-bold mb-2">Round {game.current_round} - Twist Phase</h2>
+              <p className="text-slate-600 mb-6">Teams are adapting to a surprise twist! Scoring phase is coming up next.</p>
+
+              {game.current_twist && (
+                <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-4">
+                  <div className="text-xs font-semibold text-amber-800 mb-1">ACTIVE TWIST</div>
+                  <p className="text-amber-900 font-medium">{game.current_twist}</p>
+                </div>
+              )}
+
+              <div className="bg-blue-50 rounded-xl p-4">
+                <h3 className="font-semibold mb-2">Teams Competing ({teams.length})</h3>
+                <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-2">
+                  {teams.map((t) => (
+                    <div key={t.id} className="border rounded-lg p-2 bg-white text-sm">
+                      {t.name}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
