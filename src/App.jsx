@@ -1,9 +1,8 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Play,
   Pause,
-  StopCircle,
   Plus,
   RefreshCcw,
   Timer as TimerIcon,
@@ -12,13 +11,10 @@ import {
   Wand2,
   Sparkles,
   Settings,
+  Share2,
+  Check,
 } from "lucide-react";
-
-// =============================
-// Prompt Wars — Interactive Team Builder
-// Single-file React app (no backend) using TailwindCSS
-// Features: team management, rounds, timed challenges, twist cards, scoring, leaderboard, CSV export
-// =============================
+import { supabase } from "./supabaseClient";
 
 const DEFAULT_CHALLENGES = [
   { id: 1, mode: "Story", text: "Write a 150-word story about a robot who learns to dream." },
@@ -46,23 +42,6 @@ const DEFAULT_TWISTS = [
   "Force a persona: 'meticulous auditor' or 'chaotic creative director'.",
 ];
 
-function useLocalStorage(key, initialValue) {
-  const [value, setValue] = useState(() => {
-    try {
-      const stored = localStorage.getItem(key);
-      return stored ? JSON.parse(stored) : initialValue;
-    } catch {
-      return initialValue;
-    }
-  });
-  useEffect(() => {
-    try {
-      localStorage.setItem(key, JSON.stringify(value));
-    } catch {}
-  }, [key, value]);
-  return [value, setValue];
-}
-
 function classNames(...arr) {
   return arr.filter(Boolean).join(" ");
 }
@@ -81,132 +60,271 @@ const PHASES = {
 };
 
 export default function PromptWarsApp() {
-  const [teams, setTeams] = useLocalStorage("pw_teams", []);
+  const [gameId, setGameId] = useState(null);
+  const [game, setGame] = useState(null);
+  const [teams, setTeams] = useState([]);
+  const [submissions, setSubmissions] = useState({});
+  const [scores, setScores] = useState({});
   const [teamName, setTeamName] = useState("");
-  const [rounds, setRounds] = useLocalStorage("pw_rounds", 3);
-  const [mode, setMode] = useLocalStorage("pw_mode", "Any");
-  const [roundLength, setRoundLength] = useLocalStorage("pw_roundLength", 180);
-  const [twistOn, setTwistOn] = useLocalStorage("pw_twistOn", true);
-  const [phase, setPhase] = useLocalStorage("pw_phase", PHASES.SETUP);
-  const [currentRound, setCurrentRound] = useLocalStorage("pw_currentRound", 1);
-  const [challenge, setChallenge] = useLocalStorage("pw_challenge", null);
-  const [twist, setTwist] = useLocalStorage("pw_twist", null);
-  const [submissions, setSubmissions] = useLocalStorage("pw_submissions", {}); // {teamId: {prompt, output, notes}}
-  const [scores, setScores] = useLocalStorage("pw_scores", {}); // {teamId: {creativity, clarity, power}}
-  const [timeLeft, setTimeLeft] = useLocalStorage("pw_timeLeft", roundLength);
-  const [isRunning, setIsRunning] = useLocalStorage("pw_isRunning", false);
-  const [challengeBank, setChallengeBank] = useLocalStorage("pw_challenges", DEFAULT_CHALLENGES);
-  const [twistBank, setTwistBank] = useLocalStorage("pw_twists", DEFAULT_TWISTS);
+  const [challengeBank] = useState(DEFAULT_CHALLENGES);
+  const [twistBank] = useState(DEFAULT_TWISTS);
+  const [copied, setCopied] = useState(false);
 
-  // Timer
   useEffect(() => {
-    let id;
-    if (isRunning && timeLeft > 0) {
-      id = setInterval(() => setTimeLeft((t) => t - 1), 1000);
+    const urlParams = new URLSearchParams(window.location.search);
+    const existingGameId = urlParams.get('game');
+
+    if (existingGameId) {
+      setGameId(existingGameId);
+      loadGame(existingGameId);
     }
-    if (timeLeft === 0) setIsRunning(false);
-    return () => clearInterval(id);
-  }, [isRunning, timeLeft]);
+  }, []);
+
+  const loadGame = async (id) => {
+    const { data: gameData } = await supabase
+      .from('games')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (gameData) {
+      setGame(gameData);
+      loadTeams(id);
+      loadSubmissions(id, gameData.current_round);
+      loadScores(id, gameData.current_round);
+    }
+  };
+
+  const loadTeams = async (id) => {
+    const { data } = await supabase
+      .from('teams')
+      .select('*')
+      .eq('game_id', id)
+      .order('created_at', { ascending: true });
+    setTeams(data || []);
+  };
+
+  const loadSubmissions = async (id, round) => {
+    const { data } = await supabase
+      .from('submissions')
+      .select('*')
+      .eq('game_id', id)
+      .eq('round', round);
+
+    const subMap = {};
+    (data || []).forEach(sub => {
+      subMap[sub.team_id] = sub;
+    });
+    setSubmissions(subMap);
+  };
+
+  const loadScores = async (id, round) => {
+    const { data } = await supabase
+      .from('scores')
+      .select('*')
+      .eq('game_id', id)
+      .eq('round', round);
+
+    const scoreMap = {};
+    (data || []).forEach(score => {
+      scoreMap[score.team_id] = score;
+    });
+    setScores(scoreMap);
+  };
 
   useEffect(() => {
-    // Sync when roundLength changes during setup
-    if (phase === PHASES.SETUP) setTimeLeft(roundLength);
-  }, [roundLength, phase, setTimeLeft]);
+    if (!gameId) return;
 
-  const addTeam = () => {
-    if (!teamName.trim()) return;
-    const id = crypto.randomUUID();
-    setTeams([...teams, { id, name: teamName.trim(), score: 0 }]);
+    const gameChannel = supabase
+      .channel(`game:${gameId}`)
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'games', filter: `id=eq.${gameId}` },
+        (payload) => {
+          if (payload.eventType === 'UPDATE') {
+            setGame(payload.new);
+            if (payload.new.current_round !== game?.current_round) {
+              loadSubmissions(gameId, payload.new.current_round);
+              loadScores(gameId, payload.new.current_round);
+            }
+          }
+        }
+      )
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'teams', filter: `game_id=eq.${gameId}` },
+        () => loadTeams(gameId)
+      )
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'submissions', filter: `game_id=eq.${gameId}` },
+        () => game && loadSubmissions(gameId, game.current_round)
+      )
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'scores', filter: `game_id=eq.${gameId}` },
+        () => game && loadScores(gameId, game.current_round)
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(gameChannel);
+    };
+  }, [gameId, game?.current_round]);
+
+  const createNewGame = async () => {
+    const { data: newGame } = await supabase
+      .from('games')
+      .insert({
+        rounds: 3,
+        current_round: 1,
+        mode: 'Any',
+        round_length: 180,
+        twist_enabled: true,
+        phase: PHASES.SETUP,
+        time_left: 180,
+        is_running: false
+      })
+      .select()
+      .single();
+
+    setGameId(newGame.id);
+    setGame(newGame);
+    window.history.pushState({}, '', `?game=${newGame.id}`);
+  };
+
+  const shareGameLink = () => {
+    const url = `${window.location.origin}${window.location.pathname}?game=${gameId}`;
+    navigator.clipboard.writeText(url);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const addTeam = async () => {
+    if (!teamName.trim() || !gameId) return;
+    await supabase
+      .from('teams')
+      .insert({
+        game_id: gameId,
+        name: teamName.trim(),
+        score: 0
+      });
     setTeamName("");
   };
 
-  const removeTeam = (id) => {
-    setTeams(teams.filter((t) => t.id !== id));
-    const newSubs = { ...submissions };
-    delete newSubs[id];
-    setSubmissions(newSubs);
-    const newScores = { ...scores };
-    delete newScores[id];
-    setScores(newScores);
+  const removeTeam = async (id) => {
+    await supabase.from('teams').delete().eq('id', id);
   };
 
-  const resetRoundData = () => {
-    setSubmissions({});
-    setScores({});
+  const updateGame = async (updates) => {
+    await supabase
+      .from('games')
+      .update(updates)
+      .eq('id', gameId);
   };
 
-  const startGame = () => {
+  const startGame = async () => {
     if (teams.length < 2) {
       alert("Add at least two teams to start.");
       return;
     }
-    resetRoundData();
-    const pool = mode === "Any" ? challengeBank : challengeBank.filter((c) => c.mode === mode);
+    const pool = game.mode === "Any" ? challengeBank : challengeBank.filter((c) => c.mode === game.mode);
     const newChallenge = randFrom(pool);
-    setChallenge(newChallenge);
-    if (twistOn) setTwist(randFrom(twistBank));
-    setPhase(PHASES.PROMPT);
-    setTimeLeft(roundLength);
-    setIsRunning(true);
+    const newTwist = game.twist_enabled ? randFrom(twistBank) : null;
+
+    await updateGame({
+      phase: PHASES.PROMPT,
+      current_challenge: newChallenge,
+      current_twist: newTwist,
+      time_left: game.round_length,
+      is_running: true
+    });
   };
 
-  const nextPhase = () => {
-    if (phase === PHASES.PROMPT && twistOn) {
-      setPhase(PHASES.TWIST);
-      setTimeLeft(Math.max(45, Math.floor(roundLength / 3)));
-      setIsRunning(true);
+  const nextPhase = async () => {
+    if (game.phase === PHASES.PROMPT && game.twist_enabled) {
+      await updateGame({
+        phase: PHASES.TWIST,
+        time_left: Math.max(45, Math.floor(game.round_length / 3)),
+        is_running: true
+      });
       return;
     }
-    if (phase === PHASES.PROMPT && !twistOn) {
-      setPhase(PHASES.SCORING);
-      setIsRunning(false);
+    if (game.phase === PHASES.PROMPT && !game.twist_enabled) {
+      await updateGame({
+        phase: PHASES.SCORING,
+        is_running: false
+      });
       return;
     }
-    if (phase === PHASES.TWIST) {
-      setPhase(PHASES.SCORING);
-      setIsRunning(false);
+    if (game.phase === PHASES.TWIST) {
+      await updateGame({
+        phase: PHASES.SCORING,
+        is_running: false
+      });
       return;
     }
-    if (phase === PHASES.SCORING) {
-      if (currentRound >= rounds) {
-        setPhase(PHASES.END);
+    if (game.phase === PHASES.SCORING) {
+      if (game.current_round >= game.rounds) {
+        await updateGame({ phase: PHASES.END });
       } else {
-        // carry to next round
-        const pool = mode === "Any" ? challengeBank : challengeBank.filter((c) => c.mode === mode);
+        const pool = game.mode === "Any" ? challengeBank : challengeBank.filter((c) => c.mode === game.mode);
         const newChallenge = randFrom(pool);
-        setChallenge(newChallenge);
-        if (twistOn) setTwist(randFrom(twistBank));
-        setCurrentRound(currentRound + 1);
-        resetRoundData();
-        setPhase(PHASES.PROMPT);
-        setTimeLeft(roundLength);
-        setIsRunning(true);
+        const newTwist = game.twist_enabled ? randFrom(twistBank) : null;
+        await updateGame({
+          current_round: game.current_round + 1,
+          phase: PHASES.PROMPT,
+          current_challenge: newChallenge,
+          current_twist: newTwist,
+          time_left: game.round_length,
+          is_running: true
+        });
       }
     }
   };
 
-  const stopTimer = () => setIsRunning(false);
-  const startTimer = () => {
-    if (timeLeft === 0) setTimeLeft(30);
-    setIsRunning(true);
+  const stopTimer = () => updateGame({ is_running: false });
+  const startTimer = async () => {
+    if (game.time_left === 0) {
+      await updateGame({ time_left: 30, is_running: true });
+    } else {
+      await updateGame({ is_running: true });
+    }
   };
-  const resetTimer = () => {
-    setIsRunning(false);
-    setTimeLeft(roundLength);
+  const resetTimer = () => updateGame({ is_running: false, time_left: game.round_length });
+
+  const onEditSubmission = async (teamId, field, value) => {
+    const existing = submissions[teamId];
+    if (existing) {
+      await supabase
+        .from('submissions')
+        .update({ [field]: value })
+        .eq('id', existing.id);
+    } else {
+      await supabase
+        .from('submissions')
+        .insert({
+          game_id: gameId,
+          team_id: teamId,
+          round: game.current_round,
+          [field]: value
+        });
+    }
   };
 
-  const onEditSubmission = (teamId, field, value) => {
-    setSubmissions({
-      ...submissions,
-      [teamId]: { ...submissions[teamId], [field]: value },
-    });
-  };
-
-  const onScore = (teamId, field, value) => {
-    setScores({
-      ...scores,
-      [teamId]: { ...scores[teamId], [field]: Number(value) },
-    });
+  const onScore = async (teamId, field, value) => {
+    const existing = scores[teamId];
+    if (existing) {
+      await supabase
+        .from('scores')
+        .update({ [field]: value })
+        .eq('id', existing.id);
+    } else {
+      await supabase
+        .from('scores')
+        .insert({
+          game_id: gameId,
+          team_id: teamId,
+          round: game.current_round,
+          [field]: value
+        });
+    }
   };
 
   const roundTotals = useMemo(() => {
@@ -219,19 +337,15 @@ export default function PromptWarsApp() {
     return totals;
   }, [scores, teams]);
 
-  useEffect(() => {
-    // apply round totals to overall score when entering RESULTS phase
-    if (phase === PHASES.RESULTS || phase === PHASES.SCORING) return;
-  }, [phase]);
-
-  const finalizeScoring = () => {
-    // add round totals to team scores
-    const updated = teams.map((t) => ({ ...t }));
-    for (const t of updated) {
-      t.score += roundTotals[t.id] || 0;
+  const finalizeScoring = async () => {
+    for (const t of teams) {
+      const roundTotal = roundTotals[t.id] || 0;
+      await supabase
+        .from('teams')
+        .update({ score: t.score + roundTotal })
+        .eq('id', t.id);
     }
-    setTeams(updated);
-    setPhase(PHASES.RESULTS);
+    await updateGame({ phase: PHASES.RESULTS });
   };
 
   const leaderboard = useMemo(() => {
@@ -252,17 +366,14 @@ export default function PromptWarsApp() {
       "CumulativeScore",
     ];
     const rows = [];
-    const cum = {};
-    for (const t of teams) cum[t.id] = 0;
 
-    // Build one row per team for current round
     for (const t of teams) {
       const sub = submissions[t.id] || {};
       const s = scores[t.id] || {};
       const total = (s.creativity || 0) + (s.clarity || 0) + (s.power || 0);
-      const cumulative = (t.score || 0) + total; // if exporting mid-round, include potential
+      const cumulative = (t.score || 0) + total;
       rows.push([
-        currentRound,
+        game.current_round,
         t.name,
         (sub.prompt || "").replaceAll("\n", " "),
         (sub.output || "").replaceAll("\n", " "),
@@ -280,30 +391,58 @@ export default function PromptWarsApp() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `prompt-wars_round-${currentRound}.csv`;
+    a.download = `prompt-wars_round-${game.current_round}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
-  const clearAll = () => {
+  const clearAll = async () => {
     if (!confirm("Reset everything? This will clear teams and progress.")) return;
+    if (gameId) {
+      await supabase.from('games').delete().eq('id', gameId);
+    }
+    setGameId(null);
+    setGame(null);
     setTeams([]);
-    setTeamName("");
-    setRounds(3);
-    setMode("Any");
-    setRoundLength(180);
-    setTwistOn(true);
-    setPhase(PHASES.SETUP);
-    setCurrentRound(1);
-    setChallenge(null);
-    setTwist(null);
     setSubmissions({});
     setScores({});
-    setTimeLeft(180);
-    setIsRunning(false);
-    setChallengeBank(DEFAULT_CHALLENGES);
-    setTwistBank(DEFAULT_TWISTS);
+    setTeamName("");
+    window.history.pushState({}, '', window.location.pathname);
   };
+
+  useEffect(() => {
+    if (!game || !game.is_running) return;
+
+    const interval = setInterval(async () => {
+      if (game.time_left > 0) {
+        await updateGame({ time_left: game.time_left - 1 });
+      } else {
+        await updateGame({ is_running: false });
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [game?.is_running, game?.time_left, gameId]);
+
+  if (!gameId || !game) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 text-slate-800 flex items-center justify-center">
+        <div className="bg-white rounded-2xl shadow-lg p-8 max-w-md w-full border">
+          <div className="text-center mb-6">
+            <Sparkles className="w-12 h-12 mx-auto mb-3 text-slate-700" />
+            <h1 className="text-2xl font-bold mb-2">Prompt Wars</h1>
+            <p className="text-slate-600">Interactive Team Builder with Live Sync</p>
+          </div>
+          <button
+            className="w-full py-3 px-4 rounded-xl bg-slate-900 text-white hover:bg-slate-700 font-medium"
+            onClick={createNewGame}
+          >
+            Create New Game
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   const phaseBadge = {
     [PHASES.SETUP]: "bg-slate-200 text-slate-800",
@@ -312,36 +451,46 @@ export default function PromptWarsApp() {
     [PHASES.SCORING]: "bg-amber-100 text-amber-800",
     [PHASES.RESULTS]: "bg-emerald-100 text-emerald-800",
     [PHASES.END]: "bg-rose-100 text-rose-800",
-  }[phase];
+  }[game.phase];
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 text-slate-800">
       <header className="sticky top-0 z-30 backdrop-blur bg-white/70 border-b">
-        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3">
+        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3 flex-wrap">
           <Sparkles className="w-6 h-6" />
-          <h1 className="text-xl font-bold">Prompt Wars — AI Team Builder</h1>
-          <span className={classNames("ml-auto text-xs px-2 py-1 rounded-full", phaseBadge)}>
-            {phase.toUpperCase()}
+          <h1 className="text-xl font-bold">Prompt Wars</h1>
+          <span className={classNames("text-xs px-2 py-1 rounded-full", phaseBadge)}>
+            {game.phase.toUpperCase()}
           </span>
-          <button
-            className="ml-3 inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-900 text-white hover:bg-slate-700"
-            onClick={exportCSV}
-            title="Export round data to CSV"
-          >
-            <Download className="w-4 h-4" /> Export
-          </button>
-          <button
-            className="ml-2 inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-rose-600 text-white hover:bg-rose-500"
-            onClick={clearAll}
-            title="Reset everything"
-          >
-            <RefreshCcw className="w-4 h-4" /> Reset
-          </button>
+          <div className="ml-auto flex items-center gap-2 flex-wrap">
+            <button
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-blue-600 text-white hover:bg-blue-500 text-sm"
+              onClick={shareGameLink}
+              title="Share game link"
+            >
+              {copied ? <Check className="w-4 h-4" /> : <Share2 className="w-4 h-4" />}
+              {copied ? "Copied!" : "Share"}
+            </button>
+            <button
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-900 text-white hover:bg-slate-700 text-sm"
+              onClick={exportCSV}
+              title="Export round data to CSV"
+            >
+              <Download className="w-4 h-4" /> Export
+            </button>
+            <button
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-rose-600 text-white hover:bg-rose-500 text-sm"
+              onClick={clearAll}
+              title="Reset everything"
+            >
+              <RefreshCcw className="w-4 h-4" /> Reset
+            </button>
+          </div>
         </div>
       </header>
 
       <main className="max-w-6xl mx-auto px-4 py-6">
-        {phase === PHASES.SETUP && (
+        {game.phase === PHASES.SETUP && (
           <SetupPanel
             {...{
               teamName,
@@ -349,56 +498,46 @@ export default function PromptWarsApp() {
               addTeam,
               teams,
               removeTeam,
-              rounds,
-              setRounds,
-              mode,
-              setMode,
-              roundLength,
-              setRoundLength,
-              twistOn,
-              setTwistOn,
+              game,
+              updateGame,
               startGame,
-              challengeBank,
-              setChallengeBank,
-              twistBank,
-              setTwistBank,
             }}
           />
         )}
 
-        {phase !== PHASES.SETUP && (
+        {game.phase !== PHASES.SETUP && (
           <GameHUD
-            {...{ currentRound, rounds, timeLeft, isRunning, startTimer, stopTimer, resetTimer }}
+            {...{ game, startTimer, stopTimer, resetTimer }}
           />
         )}
 
-        {phase === PHASES.PROMPT && (
+        {game.phase === PHASES.PROMPT && (
           <PromptPhase
-            {...{ teams, submissions, onEditSubmission, challenge, nextPhase, isRunning }}
+            {...{ teams, submissions, onEditSubmission, challenge: game.current_challenge, nextPhase, isRunning: game.is_running }}
           />
         )}
 
-        {phase === PHASES.TWIST && (
-          <TwistPhase {...{ teams, submissions, onEditSubmission, twist, nextPhase, isRunning }} />
+        {game.phase === PHASES.TWIST && (
+          <TwistPhase {...{ teams, submissions, onEditSubmission, twist: game.current_twist, nextPhase, isRunning: game.is_running }} />
         )}
 
-        {phase === PHASES.SCORING && (
+        {game.phase === PHASES.SCORING && (
           <ScoringPhase
             {...{ teams, submissions, scores, onScore, roundTotals, finalizeScoring }}
           />
         )}
 
-        {phase === PHASES.RESULTS && (
+        {game.phase === PHASES.RESULTS && (
           <ResultsPhase
-            {...{ leaderboard, currentRound, nextPhase, setPhase, phase, setCurrentRound, rounds }}
+            {...{ leaderboard, game, nextPhase, updateGame }}
           />
         )}
 
-        {phase === PHASES.END && <FinalWinners {...{ leaderboard, setPhase, setCurrentRound }} />}
+        {game.phase === PHASES.END && <FinalWinners {...{ leaderboard, updateGame }} />}
       </main>
 
       <footer className="max-w-6xl mx-auto px-4 pb-8 text-xs text-slate-500">
-        Built for rapid, in-room facilitation. Tip: put this on a big screen and let teams join from laptops/phones.
+        Built for rapid, in-room facilitation. Share the link so teams can join from any device.
       </footer>
     </div>
   );
@@ -410,26 +549,10 @@ function SetupPanel({
   addTeam,
   teams,
   removeTeam,
-  rounds,
-  setRounds,
-  mode,
-  setMode,
-  roundLength,
-  setRoundLength,
-  twistOn,
-  setTwistOn,
+  game,
+  updateGame,
   startGame,
-  challengeBank,
-  setChallengeBank,
-  twistBank,
-  setTwistBank,
 }) {
-  const [newChallenge, setNewChallenge] = useState("");
-  const [newChallengeMode, setNewChallengeMode] = useState("Story");
-  const [newTwist, setNewTwist] = useState("");
-
-  const removeChallenge = (id) => setChallengeBank(challengeBank.filter((c) => c.id !== id));
-
   return (
     <div className="grid gap-6">
       <section className="grid lg:grid-cols-3 gap-6">
@@ -477,16 +600,16 @@ function SetupPanel({
                 min={1}
                 max={10}
                 className="w-full mt-1 px-3 py-2 rounded-xl border"
-                value={rounds}
-                onChange={(e) => setRounds(Number(e.target.value))}
+                value={game.rounds}
+                onChange={(e) => updateGame({ rounds: Number(e.target.value) })}
               />
             </label>
             <label className="block">
               <span className="text-slate-600">Mode</span>
               <select
                 className="w-full mt-1 px-3 py-2 rounded-xl border"
-                value={mode}
-                onChange={(e) => setMode(e.target.value)}
+                value={game.mode}
+                onChange={(e) => updateGame({ mode: e.target.value })}
               >
                 {['Any','Story','Image','Business','Meme','Speed','Haiku','Corporate'].map((m) => (
                   <option key={m} value={m}>{m}</option>
@@ -500,12 +623,16 @@ function SetupPanel({
                 min={30}
                 max={900}
                 className="w-full mt-1 px-3 py-2 rounded-xl border"
-                value={roundLength}
-                onChange={(e) => setRoundLength(Number(e.target.value))}
+                value={game.round_length}
+                onChange={(e) => updateGame({ round_length: Number(e.target.value), time_left: Number(e.target.value) })}
               />
             </label>
             <label className="inline-flex items-center gap-2">
-              <input type="checkbox" checked={twistOn} onChange={(e) => setTwistOn(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={game.twist_enabled}
+                onChange={(e) => updateGame({ twist_enabled: e.target.checked })}
+              />
               <span>Enable twist round</span>
             </label>
             <button
@@ -518,99 +645,21 @@ function SetupPanel({
           </div>
         </div>
       </section>
-
-      <section className="grid lg:grid-cols-2 gap-6">
-        <div className="bg-white rounded-2xl shadow-sm p-5 border">
-          <h3 className="font-semibold mb-2">Challenge Bank</h3>
-          <div className="flex gap-2 mb-3">
-            <select
-              className="px-3 py-2 rounded-xl border"
-              value={newChallengeMode}
-              onChange={(e) => setNewChallengeMode(e.target.value)}
-            >
-              {['Story','Image','Business','Meme','Speed','Haiku','Corporate'].map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
-            </select>
-            <input
-              className="flex-1 px-3 py-2 rounded-xl border"
-              placeholder="Add a new challenge prompt"
-              value={newChallenge}
-              onChange={(e) => setNewChallenge(e.target.value)}
-            />
-            <button
-              className="px-3 py-2 rounded-xl bg-slate-900 text-white"
-              onClick={() => {
-                if (!newChallenge.trim()) return;
-                const id = crypto.randomUUID();
-                setChallengeBank([...challengeBank, { id, mode: newChallengeMode, text: newChallenge.trim() }]);
-                setNewChallenge("");
-              }}
-            >
-              <Plus className="w-4 h-4" />
-            </button>
-          </div>
-          <ul className="space-y-2 max-h-64 overflow-auto pr-1">
-            {challengeBank.map((c) => (
-              <li key={c.id} className="border rounded-xl px-3 py-2 text-sm flex items-start gap-2">
-                <span className="text-slate-500 text-xs px-2 py-0.5 rounded-full bg-slate-100">{c.mode}</span>
-                <span className="flex-1">{c.text}</span>
-                <button className="text-rose-600 text-xs" onClick={() => removeChallenge(c.id)}>remove</button>
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        <div className="bg-white rounded-2xl shadow-sm p-5 border">
-          <h3 className="font-semibold mb-2">Twist Bank</h3>
-          <div className="flex gap-2 mb-3">
-            <input
-              className="flex-1 px-3 py-2 rounded-xl border"
-              placeholder="Add a new twist"
-              value={newTwist}
-              onChange={(e) => setNewTwist(e.target.value)}
-            />
-            <button
-              className="px-3 py-2 rounded-xl bg-slate-900 text-white"
-              onClick={() => {
-                if (!newTwist.trim()) return;
-                setTwistBank([...twistBank, newTwist.trim()]);
-                setNewTwist("");
-              }}
-            >
-              <Plus className="w-4 h-4" />
-            </button>
-          </div>
-          <ul className="space-y-2 max-h-64 overflow-auto pr-1">
-            {twistBank.map((t, idx) => (
-              <li key={idx} className="border rounded-xl px-3 py-2 text-sm flex items-between justify-between gap-2">
-                <span className="flex-1">{t}</span>
-                <button
-                  className="text-rose-600 text-xs"
-                  onClick={() => setTwistBank(twistBank.filter((x, i) => i !== idx))}
-                >
-                  remove
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      </section>
     </div>
   );
 }
 
-function GameHUD({ currentRound, rounds, timeLeft, isRunning, startTimer, stopTimer, resetTimer }) {
+function GameHUD({ game, startTimer, stopTimer, resetTimer }) {
   return (
     <div className="mb-6 grid md:grid-cols-3 gap-3">
       <div className="bg-white rounded-2xl p-5 border shadow-sm flex items-center gap-3">
         <TimerIcon className="w-6 h-6" />
         <div>
           <div className="text-xs text-slate-500">Timer</div>
-          <div className="text-xl font-semibold tabular-nums">{formatTime(timeLeft)}</div>
+          <div className="text-xl font-semibold tabular-nums">{formatTime(game.time_left)}</div>
         </div>
         <div className="ml-auto flex items-center gap-2">
-          {!isRunning ? (
+          {!game.is_running ? (
             <button className="px-3 py-1.5 rounded-xl bg-slate-900 text-white" onClick={startTimer}>
               <Play className="w-4 h-4" />
             </button>
@@ -626,7 +675,7 @@ function GameHUD({ currentRound, rounds, timeLeft, isRunning, startTimer, stopTi
       </div>
       <div className="bg-white rounded-2xl p-5 border shadow-sm">
         <div className="text-xs text-slate-500">Round</div>
-        <div className="text-xl font-semibold">{currentRound} / {rounds}</div>
+        <div className="text-xl font-semibold">{game.current_round} / {game.rounds}</div>
         <div className="text-xs text-slate-500 mt-1">Craft smart prompts. Iterate. Win bragging rights.</div>
       </div>
       <div className="bg-white rounded-2xl p-5 border shadow-sm">
@@ -767,17 +816,17 @@ function ScoringPhase({ teams, submissions, scores, onScore, roundTotals, finali
   );
 }
 
-function ResultsPhase({ leaderboard, currentRound, nextPhase, setPhase, phase, setCurrentRound, rounds }) {
+function ResultsPhase({ leaderboard, game, nextPhase, updateGame }) {
   return (
     <div className="grid gap-6">
-      <Callout title={`Round ${currentRound} Results`} icon={<Trophy className="w-5 h-5" />}>
+      <Callout title={`Round ${game.current_round} Results`} icon={<Trophy className="w-5 h-5" />}>
         <p>Scores have been added to team totals. Keep the momentum going!</p>
       </Callout>
 
       <Leaderboard leaderboard={leaderboard} />
 
       <div className="flex justify-end gap-2">
-        {currentRound < rounds ? (
+        {game.current_round < game.rounds ? (
           <button
             className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-900 text-white hover:bg-slate-700"
             onClick={nextPhase}
@@ -787,7 +836,7 @@ function ResultsPhase({ leaderboard, currentRound, nextPhase, setPhase, phase, s
         ) : (
           <button
             className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-fuchsia-600 text-white hover:bg-fuchsia-500"
-            onClick={() => setPhase(PHASES.END)}
+            onClick={() => updateGame({ phase: PHASES.END })}
           >
             View Winners
           </button>
@@ -797,7 +846,7 @@ function ResultsPhase({ leaderboard, currentRound, nextPhase, setPhase, phase, s
   );
 }
 
-function FinalWinners({ leaderboard, setPhase, setCurrentRound }) {
+function FinalWinners({ leaderboard, updateGame }) {
   const [fireworks, setFireworks] = useState(false);
   useEffect(() => {
     setFireworks(true);
@@ -814,8 +863,7 @@ function FinalWinners({ leaderboard, setPhase, setCurrentRound }) {
         <button
           className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-900 text-white hover:bg-slate-700"
           onClick={() => {
-            setPhase(PHASES.SETUP);
-            setCurrentRound(1);
+            updateGame({ phase: PHASES.SETUP, current_round: 1 });
           }}
         >
           Play Again
@@ -850,7 +898,7 @@ function Leaderboard({ leaderboard, highlightTop = false }) {
         </thead>
         <tbody>
           {leaderboard.map((t, idx) => (
-            <tr key={t.id} className={classNames("border-t", highlightTop && idx === 0 && "bg-amber-50")}> 
+            <tr key={t.id} className={classNames("border-t", highlightTop && idx === 0 && "bg-amber-50")}>
               <td className="p-3 font-medium">{idx + 1}</td>
               <td className="p-3">{t.name}</td>
               <td className="p-3 tabular-nums">{t.score}</td>
