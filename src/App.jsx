@@ -148,6 +148,7 @@ export default function PromptWarsApp() {
       .on('postgres_changes',
         { event: '*', schema: 'public', table: 'games', filter: `id=eq.${gameId}` },
         (payload) => {
+          console.log('Games update received:', payload.eventType);
           if (payload.eventType === 'UPDATE' || payload.eventType === 'INSERT') {
             setGame(prevGame => {
               if (payload.new.current_round !== prevGame?.current_round) {
@@ -162,12 +163,14 @@ export default function PromptWarsApp() {
       .on('postgres_changes',
         { event: '*', schema: 'public', table: 'teams', filter: `game_id=eq.${gameId}` },
         (payload) => {
+          console.log('Teams update received:', payload.eventType);
           loadTeams(gameId);
         }
       )
       .on('postgres_changes',
         { event: '*', schema: 'public', table: 'submissions', filter: `game_id=eq.${gameId}` },
         (payload) => {
+          console.log('Submissions update received:', payload.eventType);
           setGame(currentGame => {
             if (currentGame) {
               loadSubmissions(gameId, currentGame.current_round);
@@ -179,6 +182,7 @@ export default function PromptWarsApp() {
       .on('postgres_changes',
         { event: '*', schema: 'public', table: 'scores', filter: `game_id=eq.${gameId}` },
         (payload) => {
+          console.log('Scores update received:', payload.eventType);
           setGame(currentGame => {
             if (currentGame) {
               loadScores(gameId, currentGame.current_round);
@@ -188,8 +192,11 @@ export default function PromptWarsApp() {
         }
       )
       .subscribe((status) => {
+        console.log('Subscription status:', status);
         if (status === 'SUBSCRIBED') {
-          console.log('Real-time subscription active');
+          console.log('Real-time subscription active for game:', gameId);
+        } else if (status === 'CHANNEL_ERROR') {
+          console.error('Real-time subscription error');
         }
       });
 
