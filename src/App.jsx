@@ -496,7 +496,7 @@ export default function PromptWarsApp() {
         <div className="bg-white rounded-2xl shadow-lg p-8 max-w-md w-full border">
           <div className="text-center mb-6">
             <Sparkles className="w-12 h-12 mx-auto mb-3 text-slate-700" />
-            <h1 className="text-2xl font-bold mb-2">Prompt Wars</h1>
+            <h1 className="text-2xl font-bold mb-2">ISS BSI AI/CoPilot Challenge</h1>
             <p className="text-slate-600">Interactive Team Builder with Live Sync</p>
           </div>
           <button
@@ -524,7 +524,7 @@ export default function PromptWarsApp() {
       <header className="sticky top-0 z-30 backdrop-blur bg-white/70 border-b">
         <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3 flex-wrap">
           <Sparkles className="w-6 h-6" />
-          <h1 className="text-xl font-bold">Prompt Wars</h1>
+          <h1 className="text-xl font-bold">ISS BSI AI/CoPilot Challenge</h1>
           <span className={classNames("text-xs px-2 py-1 rounded-full", phaseBadge)}>
             {game.phase.toUpperCase()}
           </span>
@@ -1004,7 +1004,7 @@ function FinalWinners({ leaderboard, updateGame, isFacilitator }) {
   return (
     <div className="grid gap-6">
       <Callout title="Final Winners" icon={<Trophy className="w-6 h-6" />}>
-        <p>Congratulations to the top teams! Thanks for playing Prompt Wars.</p>
+        <p>Congratulations to the top teams! Thanks for playing ISS BSI AI/CoPilot Challenge.</p>
       </Callout>
       <Leaderboard leaderboard={leaderboard} highlightTop />
       {isFacilitator && (
