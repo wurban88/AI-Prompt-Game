@@ -70,7 +70,9 @@ export default function PromptWarsApp() {
   const [twistBank] = useState(DEFAULT_TWISTS);
   const [copied, setCopied] = useState(false);
   const [copiedParticipant, setCopiedParticipant] = useState(false);
+  const [copiedScorer, setCopiedScorer] = useState(false);
   const [isFacilitator, setIsFacilitator] = useState(false);
+  const [isScorer, setIsScorer] = useState(false);
 
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
@@ -80,6 +82,7 @@ export default function PromptWarsApp() {
     if (existingGameId) {
       setGameId(existingGameId);
       setIsFacilitator(role === 'facilitator');
+      setIsScorer(role === 'scorer');
       loadGame(existingGameId);
     }
   }, []);
@@ -239,6 +242,13 @@ export default function PromptWarsApp() {
     navigator.clipboard.writeText(url);
     setCopiedParticipant(true);
     setTimeout(() => setCopiedParticipant(false), 2000);
+  };
+
+  const shareScorerLink = () => {
+    const url = `${window.location.origin}${window.location.pathname}?game=${gameId}&role=scorer`;
+    navigator.clipboard.writeText(url);
+    setCopiedScorer(true);
+    setTimeout(() => setCopiedScorer(false), 2000);
   };
 
   const addTeam = async () => {
@@ -575,14 +585,35 @@ export default function PromptWarsApp() {
               copiedParticipant,
               shareFacilitatorLink,
               copied,
+              shareScorerLink,
+              copiedScorer,
               challengeBank,
               setChallengeBank,
             }}
           />
         )}
 
-        {game.phase === PHASES.SETUP && !isFacilitator && (
+        {game.phase === PHASES.SETUP && !isFacilitator && !isScorer && (
           <ParticipantWaitingRoom game={game} teams={teams} />
+        )}
+
+        {game.phase === PHASES.SETUP && isScorer && (
+          <div className="bg-white rounded-2xl shadow-sm p-8 border text-center">
+            <Trophy className="w-16 h-16 mx-auto mb-4 text-emerald-600" />
+            <h2 className="text-2xl font-bold mb-2">Scorer View</h2>
+            <p className="text-slate-600 mb-6">You have anonymous scoring access. You'll be able to score submissions when the game reaches the scoring phase.</p>
+            <div className="bg-slate-50 rounded-xl p-4">
+              <h3 className="font-semibold mb-3">Teams Registered ({teams.length})</h3>
+              <ul className="grid sm:grid-cols-2 md:grid-cols-3 gap-2">
+                {teams.map((t) => (
+                  <li key={t.id} className="border rounded-lg p-2 bg-white text-sm">
+                    {t.name}
+                  </li>
+                ))}
+                {teams.length === 0 && <p className="text-sm text-slate-500">No teams yet</p>}
+              </ul>
+            </div>
+          </div>
         )}
 
         {game.phase !== PHASES.SETUP && (
@@ -591,29 +622,75 @@ export default function PromptWarsApp() {
           />
         )}
 
-        {game.phase === PHASES.PROMPT && (
+        {game.phase === PHASES.PROMPT && !isScorer && (
           <PromptPhase
             {...{ teams, submissions, onEditSubmission, challenge: game.current_challenge, nextPhase, isRunning: game.is_running, isFacilitator }}
           />
         )}
 
-        {game.phase === PHASES.TWIST && (
+        {game.phase === PHASES.TWIST && !isScorer && (
           <TwistPhase {...{ teams, submissions, onEditSubmission, twist: game.current_twist, nextPhase, isRunning: game.is_running, isFacilitator }} />
+        )}
+
+        {(game.phase === PHASES.PROMPT || game.phase === PHASES.TWIST) && isScorer && (
+          <div className="bg-white rounded-2xl shadow-sm p-8 border text-center">
+            <TimerIcon className="w-16 h-16 mx-auto mb-4 text-slate-400" />
+            <h2 className="text-2xl font-bold mb-2">Teams Are Working</h2>
+            <p className="text-slate-600">Teams are currently working on their prompts. You'll be able to score when the scoring phase begins.</p>
+          </div>
         )}
 
         {game.phase === PHASES.SCORING && (
           <ScoringPhase
-            {...{ teams, submissions, scores, onScore, roundTotals, finalizeScoring, isFacilitator }}
+            {...{ teams, submissions, scores, onScore, roundTotals, finalizeScoring, isFacilitator, isScorer }}
           />
         )}
 
-        {game.phase === PHASES.RESULTS && (
+        {game.phase === PHASES.RESULTS && !isScorer && (
           <ResultsPhase
             {...{ leaderboard, game, nextPhase, updateGame, isFacilitator }}
           />
         )}
 
-        {game.phase === PHASES.END && <FinalWinners {...{ leaderboard, updateGame, isFacilitator }} />}
+        {game.phase === PHASES.RESULTS && isScorer && (
+          <div className="bg-white rounded-2xl shadow-sm p-8 border text-center">
+            <Trophy className="w-16 h-16 mx-auto mb-4 text-emerald-600" />
+            <h2 className="text-2xl font-bold mb-2">Round Complete</h2>
+            <p className="text-slate-600 mb-6">Scores have been submitted. The facilitator is reviewing the results.</p>
+            <div className="bg-slate-50 rounded-xl p-4">
+              <h3 className="font-semibold mb-3">Current Leaderboard</h3>
+              <ul className="space-y-2">
+                {leaderboard.map((team, idx) => (
+                  <li key={team.id} className="flex items-center justify-between border rounded-lg p-2 bg-white text-sm">
+                    <span className="font-medium">#{idx + 1} {team.name}</span>
+                    <span className="text-slate-600">{team.score} pts</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+
+        {game.phase === PHASES.END && !isScorer && <FinalWinners {...{ leaderboard, updateGame, isFacilitator }} />}
+
+        {game.phase === PHASES.END && isScorer && (
+          <div className="bg-white rounded-2xl shadow-sm p-8 border text-center">
+            <Trophy className="w-16 h-16 mx-auto mb-4 text-amber-500" />
+            <h2 className="text-2xl font-bold mb-2">Game Complete</h2>
+            <p className="text-slate-600 mb-6">Thank you for scoring! Here are the final results.</p>
+            <div className="bg-slate-50 rounded-xl p-4">
+              <h3 className="font-semibold mb-3">Final Standings</h3>
+              <ul className="space-y-2">
+                {leaderboard.map((team, idx) => (
+                  <li key={team.id} className="flex items-center justify-between border rounded-lg p-3 bg-white">
+                    <span className="font-bold text-lg">#{idx + 1} {team.name}</span>
+                    <span className="text-xl font-bold text-emerald-600">{team.score}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
       </main>
 
       <footer className="max-w-6xl mx-auto px-4 pb-8 text-xs text-slate-500">
@@ -636,6 +713,8 @@ function SetupPanel({
   copiedParticipant,
   shareFacilitatorLink,
   copied,
+  shareScorerLink,
+  copiedScorer,
   challengeBank,
   setChallengeBank,
 }) {
@@ -674,7 +753,7 @@ function SetupPanel({
         <h3 className="font-semibold text-blue-900 mb-2 flex items-center gap-2">
           <Share2 className="w-5 h-5" /> Share Links
         </h3>
-        <div className="grid md:grid-cols-2 gap-3 text-sm">
+        <div className="grid md:grid-cols-3 gap-3 text-sm">
           <div>
             <div className="text-blue-800 mb-1">Participant Link</div>
             <button
@@ -694,6 +773,16 @@ function SetupPanel({
               {copied ? <><Check className="w-4 h-4 inline" /> Copied!</> : <><Share2 className="w-4 h-4 inline" /> Copy Link</>}
             </button>
             <p className="text-xs text-blue-700 mt-1">Full control and setup access</p>
+          </div>
+          <div>
+            <div className="text-blue-800 mb-1">Scorer Link</div>
+            <button
+              className="w-full px-3 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-500"
+              onClick={shareScorerLink}
+            >
+              {copiedScorer ? <><Check className="w-4 h-4 inline" /> Copied!</> : <><Share2 className="w-4 h-4 inline" /> Copy Link</>}
+            </button>
+            <p className="text-xs text-blue-700 mt-1">Anonymous scoring access only</p>
           </div>
         </div>
       </div>
@@ -1049,7 +1138,9 @@ function TwistPhase({ teams, submissions, onEditSubmission, twist, nextPhase, is
   );
 }
 
-function ScoringPhase({ teams, submissions, scores, onScore, roundTotals, finalizeScoring, isFacilitator }) {
+function ScoringPhase({ teams, submissions, scores, onScore, roundTotals, finalizeScoring, isFacilitator, isScorer }) {
+  const canScore = isFacilitator || isScorer;
+
   return (
     <div className="grid gap-6">
       <Callout title="Judge & Score" icon={<Trophy className="w-5 h-5" />}>
@@ -1071,7 +1162,7 @@ function ScoringPhase({ teams, submissions, scores, onScore, roundTotals, finali
             <div className="text-sm border rounded-xl p-2 mb-3 bg-slate-50 min-h-12">
               {submissions[t.id]?.output || <em className="text-slate-400">(none)</em>}
             </div>
-            {isFacilitator ? (
+            {canScore ? (
               <>
                 <ScoreRow label="Creativity" value={scores[t.id]?.creativity || 0} onChange={(v) => onScore(t.id, "creativity", v)} />
                 <ScoreRow label="Clarity" value={scores[t.id]?.clarity || 0} onChange={(v) => onScore(t.id, "clarity", v)} />
