@@ -73,6 +73,9 @@ export default function PromptWarsApp() {
   const [copiedScorer, setCopiedScorer] = useState(false);
   const [isFacilitator, setIsFacilitator] = useState(false);
   const [isScorer, setIsScorer] = useState(false);
+  const [scorerId, setScorerId] = useState(null);
+  const [scorerScores, setScorerScores] = useState({});
+  const [allScorerSubmissions, setAllScorerSubmissions] = useState([]);
 
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
@@ -83,6 +86,16 @@ export default function PromptWarsApp() {
       setGameId(existingGameId);
       setIsFacilitator(role === 'facilitator');
       setIsScorer(role === 'scorer');
+
+      if (role === 'scorer') {
+        let storedScorerId = localStorage.getItem('scorerId');
+        if (!storedScorerId) {
+          storedScorerId = `scorer_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          localStorage.setItem('scorerId', storedScorerId);
+        }
+        setScorerId(storedScorerId);
+      }
+
       loadGame(existingGameId);
     }
   }, []);
@@ -139,6 +152,24 @@ export default function PromptWarsApp() {
     setScores(scoreMap);
   };
 
+  const loadScorerSubmissions = async (id, round) => {
+    const { data } = await supabase
+      .from('scorer_submissions')
+      .select('*')
+      .eq('game_id', id)
+      .eq('round', round);
+
+    setAllScorerSubmissions(data || []);
+
+    if (scorerId) {
+      const myScores = {};
+      (data || []).filter(s => s.scorer_id === scorerId).forEach(score => {
+        myScores[score.team_id] = score;
+      });
+      setScorerScores(myScores);
+    }
+  };
+
   useEffect(() => {
     if (!gameId) return;
 
@@ -157,6 +188,7 @@ export default function PromptWarsApp() {
               if (payload.new.current_round !== prevGame?.current_round) {
                 loadSubmissions(gameId, payload.new.current_round);
                 loadScores(gameId, payload.new.current_round);
+                loadScorerSubmissions(gameId, payload.new.current_round);
               }
               return payload.new;
             });
@@ -189,6 +221,18 @@ export default function PromptWarsApp() {
           setGame(currentGame => {
             if (currentGame) {
               loadScores(gameId, currentGame.current_round);
+            }
+            return currentGame;
+          });
+        }
+      )
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'scorer_submissions', filter: `game_id=eq.${gameId}` },
+        (payload) => {
+          console.log('Scorer submissions update received:', payload.eventType);
+          setGame(currentGame => {
+            if (currentGame) {
+              loadScorerSubmissions(gameId, currentGame.current_round);
             }
             return currentGame;
           });
@@ -393,6 +437,34 @@ export default function PromptWarsApp() {
           game_id: gameId,
           team_id: teamId,
           round: game.current_round,
+          [field]: value
+        });
+    }
+  };
+
+  const onScorerScore = async (teamId, field, value) => {
+    setScorerScores(prev => ({
+      ...prev,
+      [teamId]: {
+        ...prev[teamId],
+        [field]: value
+      }
+    }));
+
+    const existing = scorerScores[teamId];
+    if (existing) {
+      await supabase
+        .from('scorer_submissions')
+        .update({ [field]: value, updated_at: new Date().toISOString() })
+        .eq('id', existing.id);
+    } else {
+      await supabase
+        .from('scorer_submissions')
+        .insert({
+          game_id: gameId,
+          team_id: teamId,
+          round: game.current_round,
+          scorer_id: scorerId,
           [field]: value
         });
     }
@@ -642,7 +714,7 @@ export default function PromptWarsApp() {
 
         {game.phase === PHASES.SCORING && (
           <ScoringPhase
-            {...{ teams, submissions, scores, onScore, roundTotals, finalizeScoring, isFacilitator, isScorer }}
+            {...{ teams, submissions, scores, onScore, roundTotals, finalizeScoring, isFacilitator, isScorer, scorerScores, onScorerScore, allScorerSubmissions }}
           />
         )}
 
@@ -1138,8 +1210,30 @@ function TwistPhase({ teams, submissions, onEditSubmission, twist, nextPhase, is
   );
 }
 
-function ScoringPhase({ teams, submissions, scores, onScore, roundTotals, finalizeScoring, isFacilitator, isScorer }) {
+function ScoringPhase({ teams, submissions, scores, onScore, roundTotals, finalizeScoring, isFacilitator, isScorer, scorerScores, onScorerScore, allScorerSubmissions }) {
   const canScore = isFacilitator || isScorer;
+  const activeScores = isScorer ? scorerScores : scores;
+  const activeOnScore = isScorer ? onScorerScore : onScore;
+
+  const getScorerCount = (teamId) => {
+    return allScorerSubmissions.filter(s => s.team_id === teamId).length;
+  };
+
+  const getAverageScorerScores = (teamId) => {
+    const teamScores = allScorerSubmissions.filter(s => s.team_id === teamId);
+    if (teamScores.length === 0) return null;
+
+    const avgCreativity = teamScores.reduce((sum, s) => sum + (s.creativity || 0), 0) / teamScores.length;
+    const avgClarity = teamScores.reduce((sum, s) => sum + (s.clarity || 0), 0) / teamScores.length;
+    const avgPower = teamScores.reduce((sum, s) => sum + (s.power || 0), 0) / teamScores.length;
+
+    return {
+      creativity: avgCreativity.toFixed(1),
+      clarity: avgClarity.toFixed(1),
+      power: avgPower.toFixed(1),
+      total: (avgCreativity + avgClarity + avgPower).toFixed(1)
+    };
+  };
 
   return (
     <div className="grid gap-6">
@@ -1147,32 +1241,59 @@ function ScoringPhase({ teams, submissions, scores, onScore, roundTotals, finali
         <p>Score each team on Creativity, Clarity, and Prompt Power (0–5 each). Totals add to the leaderboard.</p>
       </Callout>
 
+      {isFacilitator && allScorerSubmissions.length > 0 && (
+        <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4">
+          <h3 className="font-semibold text-blue-900 mb-2">Scorer Submissions ({allScorerSubmissions.length})</h3>
+          <p className="text-sm text-blue-800">Multiple scorers have submitted scores. Review their submissions below each team.</p>
+        </div>
+      )}
+
       <div className="grid md:grid-cols-2 gap-4">
-        {teams.map((t) => (
-          <motion.div key={t.id} layout className="bg-white border rounded-2xl p-4 shadow-sm">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="font-semibold">{t.name}</span>
-              <span className="ml-auto text-xs text-slate-500">Round total: {roundTotals[t.id] || 0}</span>
-            </div>
-            <div className="text-xs text-slate-500">Prompt</div>
-            <div className="text-sm border rounded-xl p-2 mb-2 bg-slate-50 min-h-12">
-              {submissions[t.id]?.prompt || <em className="text-slate-400">(none)</em>}
-            </div>
-            <div className="text-xs text-slate-500">Output</div>
-            <div className="text-sm border rounded-xl p-2 mb-3 bg-slate-50 min-h-12">
-              {submissions[t.id]?.output || <em className="text-slate-400">(none)</em>}
-            </div>
-            {canScore ? (
-              <>
-                <ScoreRow label="Creativity" value={scores[t.id]?.creativity || 0} onChange={(v) => onScore(t.id, "creativity", v)} />
-                <ScoreRow label="Clarity" value={scores[t.id]?.clarity || 0} onChange={(v) => onScore(t.id, "clarity", v)} />
-                <ScoreRow label="Prompt Power" value={scores[t.id]?.power || 0} onChange={(v) => onScore(t.id, "power", v)} />
-              </>
-            ) : (
-              <div className="text-sm text-slate-500 text-center py-3">Waiting for facilitator to score...</div>
-            )}
-          </motion.div>
-        ))}
+        {teams.map((t) => {
+          const scorerCount = getScorerCount(t.id);
+          const avgScores = getAverageScorerScores(t.id);
+
+          return (
+            <motion.div key={t.id} layout className="bg-white border rounded-2xl p-4 shadow-sm">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="font-semibold">{t.name}</span>
+                <span className="ml-auto text-xs text-slate-500">Round total: {roundTotals[t.id] || 0}</span>
+              </div>
+              <div className="text-xs text-slate-500">Prompt</div>
+              <div className="text-sm border rounded-xl p-2 mb-2 bg-slate-50 min-h-12">
+                {submissions[t.id]?.prompt || <em className="text-slate-400">(none)</em>}
+              </div>
+              <div className="text-xs text-slate-500">Output</div>
+              <div className="text-sm border rounded-xl p-2 mb-3 bg-slate-50 min-h-12">
+                {submissions[t.id]?.output || <em className="text-slate-400">(none)</em>}
+              </div>
+
+              {isFacilitator && scorerCount > 0 && avgScores && (
+                <div className="mb-3 p-2 bg-emerald-50 border border-emerald-200 rounded-lg">
+                  <div className="text-xs font-semibold text-emerald-900 mb-1">
+                    Scorer Averages ({scorerCount} {scorerCount === 1 ? 'scorer' : 'scorers'})
+                  </div>
+                  <div className="text-xs text-emerald-800 flex gap-3">
+                    <span>Creativity: {avgScores.creativity}</span>
+                    <span>Clarity: {avgScores.clarity}</span>
+                    <span>Power: {avgScores.power}</span>
+                    <span className="font-semibold">Total: {avgScores.total}/15</span>
+                  </div>
+                </div>
+              )}
+
+              {canScore ? (
+                <>
+                  <ScoreRow label="Creativity" value={activeScores[t.id]?.creativity || 0} onChange={(v) => activeOnScore(t.id, "creativity", v)} />
+                  <ScoreRow label="Clarity" value={activeScores[t.id]?.clarity || 0} onChange={(v) => activeOnScore(t.id, "clarity", v)} />
+                  <ScoreRow label="Prompt Power" value={activeScores[t.id]?.power || 0} onChange={(v) => activeOnScore(t.id, "power", v)} />
+                </>
+              ) : (
+                <div className="text-sm text-slate-500 text-center py-3">Waiting for facilitator to score...</div>
+              )}
+            </motion.div>
+          );
+        })}
       </div>
 
       {isFacilitator && (
