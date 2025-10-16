@@ -66,7 +66,7 @@ export default function PromptWarsApp() {
   const [submissions, setSubmissions] = useState({});
   const [scores, setScores] = useState({});
   const [teamName, setTeamName] = useState("");
-  const [challengeBank] = useState(DEFAULT_CHALLENGES);
+  const [challengeBank, setChallengeBank] = useState(DEFAULT_CHALLENGES);
   const [twistBank] = useState(DEFAULT_TWISTS);
   const [copied, setCopied] = useState(false);
   const [copiedParticipant, setCopiedParticipant] = useState(false);
@@ -575,6 +575,8 @@ export default function PromptWarsApp() {
               copiedParticipant,
               shareFacilitatorLink,
               copied,
+              challengeBank,
+              setChallengeBank,
             }}
           />
         )}
@@ -634,7 +636,38 @@ function SetupPanel({
   copiedParticipant,
   shareFacilitatorLink,
   copied,
+  challengeBank,
+  setChallengeBank,
 }) {
+  const [newChallengeText, setNewChallengeText] = useState("");
+  const [newChallengeMode, setNewChallengeMode] = useState("Story");
+  const [editingChallenge, setEditingChallenge] = useState(null);
+
+  const addChallenge = () => {
+    if (!newChallengeText.trim()) return;
+    const newChallenge = {
+      id: Math.max(0, ...challengeBank.map(c => c.id)) + 1,
+      mode: newChallengeMode,
+      text: newChallengeText.trim()
+    };
+    setChallengeBank([...challengeBank, newChallenge]);
+    setNewChallengeText("");
+  };
+
+  const removeChallenge = (id) => {
+    setChallengeBank(challengeBank.filter(c => c.id !== id));
+  };
+
+  const updateChallenge = (id, updates) => {
+    setChallengeBank(challengeBank.map(c => c.id === id ? { ...c, ...updates } : c));
+    setEditingChallenge(null);
+  };
+
+  const resetChallenges = () => {
+    if (confirm('Reset all challenges to defaults?')) {
+      setChallengeBank(DEFAULT_CHALLENGES);
+    }
+  };
   return (
     <div className="grid gap-6">
       <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4">
@@ -752,6 +785,109 @@ function SetupPanel({
               <Play className="w-4 h-4" /> Start Game
             </button>
           </div>
+        </div>
+      </section>
+
+      <section className="bg-white rounded-2xl shadow-sm p-5 border">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-semibold flex items-center gap-2">
+            <Wand2 className="w-5 h-5" /> Challenge Bank ({challengeBank.length})
+          </h2>
+          <button
+            className="text-xs px-3 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700"
+            onClick={resetChallenges}
+          >
+            Reset to Defaults
+          </button>
+        </div>
+
+        <div className="mb-4 p-3 bg-slate-50 rounded-xl">
+          <h3 className="text-sm font-semibold mb-2">Add New Challenge</h3>
+          <div className="grid gap-2">
+            <div className="flex gap-2">
+              <select
+                className="px-3 py-2 rounded-xl border text-sm"
+                value={newChallengeMode}
+                onChange={(e) => setNewChallengeMode(e.target.value)}
+              >
+                {['Story','Image','Business','Meme','Speed','Haiku','Corporate'].map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex gap-2">
+              <input
+                className="flex-1 px-3 py-2 rounded-xl border text-sm"
+                placeholder="Enter challenge text..."
+                value={newChallengeText}
+                onChange={(e) => setNewChallengeText(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && addChallenge()}
+              />
+              <button
+                className="px-3 py-2 rounded-xl bg-slate-900 text-white hover:bg-slate-700"
+                onClick={addChallenge}
+              >
+                <Plus className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-2 max-h-96 overflow-y-auto">
+          {challengeBank.map((challenge) => (
+            <div key={challenge.id} className="border rounded-xl p-3">
+              {editingChallenge === challenge.id ? (
+                <div className="space-y-2">
+                  <select
+                    className="w-full px-3 py-2 rounded-lg border text-sm"
+                    value={challenge.mode}
+                    onChange={(e) => updateChallenge(challenge.id, { mode: e.target.value })}
+                  >
+                    {['Story','Image','Business','Meme','Speed','Haiku','Corporate'].map((m) => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                  <textarea
+                    className="w-full px-3 py-2 rounded-lg border text-sm"
+                    rows={2}
+                    value={challenge.text}
+                    onChange={(e) => updateChallenge(challenge.id, { text: e.target.value })}
+                  />
+                  <button
+                    className="text-xs px-3 py-1 rounded-lg bg-emerald-600 text-white hover:bg-emerald-500"
+                    onClick={() => setEditingChallenge(null)}
+                  >
+                    Done
+                  </button>
+                </div>
+              ) : (
+                <div>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex-1">
+                      <span className="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-slate-100 text-slate-700 mb-1">
+                        {challenge.mode}
+                      </span>
+                      <p className="text-sm text-slate-700">{challenge.text}</p>
+                    </div>
+                    <div className="flex gap-1">
+                      <button
+                        className="text-xs px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700"
+                        onClick={() => setEditingChallenge(challenge.id)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        className="text-xs px-2 py-1 rounded bg-rose-100 hover:bg-rose-200 text-rose-700"
+                        onClick={() => removeChallenge(challenge.id)}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       </section>
     </div>
