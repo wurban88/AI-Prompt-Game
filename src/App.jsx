@@ -140,37 +140,63 @@ export default function PromptWarsApp() {
     if (!gameId) return;
 
     const gameChannel = supabase
-      .channel(`game:${gameId}`)
+      .channel(`game:${gameId}`, {
+        config: {
+          broadcast: { self: false },
+        },
+      })
       .on('postgres_changes',
         { event: '*', schema: 'public', table: 'games', filter: `id=eq.${gameId}` },
         (payload) => {
-          if (payload.eventType === 'UPDATE') {
-            setGame(payload.new);
-            if (payload.new.current_round !== game?.current_round) {
-              loadSubmissions(gameId, payload.new.current_round);
-              loadScores(gameId, payload.new.current_round);
-            }
+          if (payload.eventType === 'UPDATE' || payload.eventType === 'INSERT') {
+            setGame(prevGame => {
+              if (payload.new.current_round !== prevGame?.current_round) {
+                loadSubmissions(gameId, payload.new.current_round);
+                loadScores(gameId, payload.new.current_round);
+              }
+              return payload.new;
+            });
           }
         }
       )
       .on('postgres_changes',
         { event: '*', schema: 'public', table: 'teams', filter: `game_id=eq.${gameId}` },
-        () => loadTeams(gameId)
+        (payload) => {
+          loadTeams(gameId);
+        }
       )
       .on('postgres_changes',
         { event: '*', schema: 'public', table: 'submissions', filter: `game_id=eq.${gameId}` },
-        () => game && loadSubmissions(gameId, game.current_round)
+        (payload) => {
+          setGame(currentGame => {
+            if (currentGame) {
+              loadSubmissions(gameId, currentGame.current_round);
+            }
+            return currentGame;
+          });
+        }
       )
       .on('postgres_changes',
         { event: '*', schema: 'public', table: 'scores', filter: `game_id=eq.${gameId}` },
-        () => game && loadScores(gameId, game.current_round)
+        (payload) => {
+          setGame(currentGame => {
+            if (currentGame) {
+              loadScores(gameId, currentGame.current_round);
+            }
+            return currentGame;
+          });
+        }
       )
-      .subscribe();
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          console.log('Real-time subscription active');
+        }
+      });
 
     return () => {
       supabase.removeChannel(gameChannel);
     };
-  }, [gameId, game?.current_round]);
+  }, [gameId]);
 
   const createNewGame = async () => {
     const { data: newGame } = await supabase
@@ -302,6 +328,14 @@ export default function PromptWarsApp() {
   const resetTimer = () => updateGame({ is_running: false, time_left: game.round_length });
 
   const onEditSubmission = async (teamId, field, value) => {
+    setSubmissions(prev => ({
+      ...prev,
+      [teamId]: {
+        ...prev[teamId],
+        [field]: value
+      }
+    }));
+
     const existing = submissions[teamId];
     if (existing) {
       await supabase
@@ -321,6 +355,14 @@ export default function PromptWarsApp() {
   };
 
   const onScore = async (teamId, field, value) => {
+    setScores(prev => ({
+      ...prev,
+      [teamId]: {
+        ...prev[teamId],
+        [field]: value
+      }
+    }));
+
     const existing = scores[teamId];
     if (existing) {
       await supabase
@@ -423,18 +465,23 @@ export default function PromptWarsApp() {
   };
 
   useEffect(() => {
-    if (!game || !game.is_running) return;
+    if (!game || !game.is_running || !isFacilitator) return;
 
     const interval = setInterval(async () => {
-      if (game.time_left > 0) {
-        await updateGame({ time_left: game.time_left - 1 });
-      } else {
-        await updateGame({ is_running: false });
-      }
+      setGame(currentGame => {
+        if (currentGame && currentGame.is_running) {
+          if (currentGame.time_left > 0) {
+            updateGame({ time_left: currentGame.time_left - 1 });
+          } else {
+            updateGame({ is_running: false });
+          }
+        }
+        return currentGame;
+      });
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [game?.is_running, game?.time_left, gameId]);
+  }, [game?.is_running, gameId, isFacilitator]);
 
   if (!gameId || !game) {
     return (
