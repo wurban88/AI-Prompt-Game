@@ -67,6 +67,8 @@ export default function PromptWarsApp() {
   const [submissions, setSubmissions] = useState({});
   const [scores, setScores] = useState({});
   const [teamName, setTeamName] = useState("");
+  const [customCode, setCustomCode] = useState("");
+  const [codeError, setCodeError] = useState("");
   const [challengeBank, setChallengeBank] = useState(DEFAULT_CHALLENGES);
   const [twistBank] = useState(DEFAULT_TWISTS);
   const [copied, setCopied] = useState(false);
@@ -101,18 +103,30 @@ export default function PromptWarsApp() {
     }
   }, []);
 
-  const loadGame = async (id) => {
-    const { data: gameData } = await supabase
+  const loadGame = async (identifier) => {
+    // Try to fetch by custom_code first, then by id
+    let { data: gameData } = await supabase
       .from('games')
       .select('*')
-      .eq('id', id)
+      .eq('custom_code', identifier)
       .maybeSingle();
 
+    // If not found by custom_code, try by id
+    if (!gameData) {
+      const result = await supabase
+        .from('games')
+        .select('*')
+        .eq('id', identifier)
+        .maybeSingle();
+      gameData = result.data;
+    }
+
     if (gameData) {
+      setGameId(gameData.id);
       setGame(gameData);
-      loadTeams(id);
-      loadSubmissions(id, gameData.current_round);
-      loadScores(id, gameData.current_round);
+      loadTeams(gameData.id);
+      loadSubmissions(gameData.id, gameData.current_round);
+      loadScores(gameData.id, gameData.current_round);
     }
   };
 
@@ -254,43 +268,76 @@ export default function PromptWarsApp() {
   }, [gameId]);
 
   const createNewGame = async () => {
+    setCodeError("");
+
+    // Validate custom code if provided
+    if (customCode) {
+      const sanitized = customCode.trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
+      if (sanitized.length < 3) {
+        setCodeError("Code must be at least 3 characters");
+        return;
+      }
+
+      // Check if code already exists
+      const { data: existing } = await supabase
+        .from('games')
+        .select('id')
+        .eq('custom_code', sanitized)
+        .maybeSingle();
+
+      if (existing) {
+        setCodeError("This code is already in use. Please choose another.");
+        return;
+      }
+    }
+
+    const gameData = {
+      rounds: 3,
+      current_round: 1,
+      mode: 'Any',
+      round_length: 180,
+      twist_enabled: true,
+      phase: PHASES.SETUP,
+      time_left: 180,
+      is_running: false
+    };
+
+    if (customCode) {
+      gameData.custom_code = customCode.trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
+    }
+
     const { data: newGame } = await supabase
       .from('games')
-      .insert({
-        rounds: 3,
-        current_round: 1,
-        mode: 'Any',
-        round_length: 180,
-        twist_enabled: true,
-        phase: PHASES.SETUP,
-        time_left: 180,
-        is_running: false
-      })
+      .insert(gameData)
       .select()
       .single();
 
+    const gameIdentifier = newGame.custom_code || newGame.id;
     setGameId(newGame.id);
     setGame(newGame);
     setIsFacilitator(true);
-    window.history.pushState({}, '', `?game=${newGame.id}&role=facilitator`);
+    window.history.pushState({}, '', `?game=${gameIdentifier}&role=facilitator`);
   };
 
   const shareFacilitatorLink = () => {
-    const url = `${window.location.origin}${window.location.pathname}?game=${gameId}&role=facilitator`;
+    const gameIdentifier = game.custom_code || gameId;
+    const url = `${window.location.origin}${window.location.pathname}?game=${gameIdentifier}&role=facilitator`;
     navigator.clipboard.writeText(url);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
   const shareParticipantLink = () => {
-    const url = `${window.location.origin}${window.location.pathname}?game=${gameId}`;
+    const gameIdentifier = game.custom_code || gameId;
+    const url = `${window.location.origin}${window.location.pathname}?game=${gameIdentifier}`;
     navigator.clipboard.writeText(url);
     setCopiedParticipant(true);
     setTimeout(() => setCopiedParticipant(false), 2000);
   };
 
   const shareScorerLink = () => {
-    const url = `${window.location.origin}${window.location.pathname}?game=${gameId}&role=scorer`;
+    const gameIdentifier = game.custom_code || gameId;
+    const url = `${window.location.origin}${window.location.pathname}?game=${gameIdentifier}&role=scorer`;
     navigator.clipboard.writeText(url);
     setCopiedScorer(true);
     setTimeout(() => setCopiedScorer(false), 2000);
@@ -582,6 +629,27 @@ export default function PromptWarsApp() {
             <h1 className="text-2xl font-bold mb-2">ISS BSI AI/CoPilot Challenge</h1>
             <p className="text-slate-600">Interactive Team Builder with Live Sync</p>
           </div>
+
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-slate-700 mb-2">
+              Custom Game Code (Optional)
+            </label>
+            <input
+              type="text"
+              value={customCode}
+              onChange={(e) => setCustomCode(e.target.value)}
+              placeholder="e.g., my-event-2024"
+              className="w-full px-4 py-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-slate-400 focus:border-transparent"
+              maxLength={50}
+            />
+            <p className="text-xs text-slate-500 mt-1">
+              Create a memorable URL like ?game=my-event-2024
+            </p>
+            {codeError && (
+              <p className="text-xs text-red-600 mt-1">{codeError}</p>
+            )}
+          </div>
+
           <button
             className="w-full py-3 px-4 rounded-xl bg-slate-900 text-white hover:bg-slate-700 font-medium"
             onClick={createNewGame}
